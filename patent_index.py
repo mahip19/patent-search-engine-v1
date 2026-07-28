@@ -1,3 +1,4 @@
+import argparse
 import json
 import glob
 import time
@@ -118,7 +119,7 @@ class PatentSearchEngine:
         surviving = int(mask.sum())
         total = len(self.chunks)
         if surviving == 0:
-            return []
+            return [], 0, total
 
         query_vec = self.model.encode([query])
         query_vec = np.array(query_vec, dtype=np.float32)
@@ -189,47 +190,54 @@ def print_results(results, top_n=None):
 
 
 if __name__ == "__main__":
-    data_dir = "data/patent_data_small"
+    parser = argparse.ArgumentParser(
+        description="Semantic patent search engine with optional metadata filters")
+    parser.add_argument("--query", required=True, help="Search query text")
+    parser.add_argument("--data-dir", default="data/patent_data_small",
+                        help="Directory containing patents_ipa*.json files")
+    parser.add_argument("--top-k", type=int, default=10,
+                        help="Number of results to return (default: 10)")
+    parser.add_argument("--classification", default=None,
+                        help="Filter by classification prefix (e.g. B60B)")
+    parser.add_argument("--title-contains", default=None,
+                        help="Filter to patents whose title contains this substring")
+    parser.add_argument("--abstract-contains", default=None,
+                        help="Filter to patents whose abstract contains this substring")
+    args = parser.parse_args()
 
     t0 = time.time()
-    engine = PatentSearchEngine(data_dir)
+    engine = PatentSearchEngine(args.data_dir)
     build_time = time.time() - t0
     print(f"Index build time: {build_time:.1f}s")
 
-    query = "a bicycle wheel spoke that reduces vibration"
+    filters = []
+    if args.classification:
+        filters.append(f"classification={args.classification}")
+    if args.title_contains:
+        filters.append(f"title_contains={args.title_contains}")
+    if args.abstract_contains:
+        filters.append(f"abstract_contains={args.abstract_contains}")
+    filter_str = " AND ".join(filters) if filters else "(none)"
 
-    # (a) Pure semantic — no filters
-    print(f"\n{'='*70}")
-    print(f'(a) PURE SEMANTIC: "{query}"')
-    print(f"{'='*70}")
-    t0 = time.time()
-    results, surviving, total = engine.search(query, top_k=10)
-    elapsed = time.time() - t0
-    print(f"Filter: {total} -> {surviving} chunks")
-    print_results(results, top_n=3)
-    print(f"Search time: {elapsed*1000:.1f}ms")
+    print(f'\nQuery:   "{args.query}"')
+    print(f"Filters: {filter_str}")
+    print(f"Top-k:   {args.top_k}\n")
 
-    # (b) classification_prefix="B60B"
-    print(f"\n{'='*70}")
-    print(f'(b) + classification_prefix="B60B"')
-    print(f"{'='*70}")
     t0 = time.time()
     results, surviving, total = engine.search(
-        query, top_k=10, classification_prefix="B60B")
-    elapsed = time.time() - t0
-    print(f"Filter: {total} -> {surviving} chunks")
-    print_results(results, top_n=3)
-    print(f"Search time: {elapsed*1000:.1f}ms")
+        args.query,
+        top_k=args.top_k,
+        classification_prefix=args.classification,
+        title_contains=args.title_contains,
+        abstract_contains=args.abstract_contains,
+    )
+    search_time = time.time() - t0
 
-    # (c) classification_prefix="B60B" AND title_contains="spoke"
-    print(f"\n{'='*70}")
-    print(f'(c) + classification_prefix="B60B" AND title_contains="spoke"')
-    print(f"{'='*70}")
-    t0 = time.time()
-    results, surviving, total = engine.search(
-        query, top_k=10, classification_prefix="B60B",
-        title_contains="spoke")
-    elapsed = time.time() - t0
-    print(f"Filter: {total} -> {surviving} chunks")
-    print_results(results, top_n=3)
-    print(f"Search time: {elapsed*1000:.1f}ms")
+    print(f"Chunks: {total} -> {surviving} after filtering")
+
+    if results:
+        print_results(results)
+    else:
+        print("\nNo results found.")
+
+    print(f"\nSearch time: {search_time*1000:.1f}ms")
