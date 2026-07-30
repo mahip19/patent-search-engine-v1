@@ -34,27 +34,29 @@ def main():
     engine = PatentSearchEngine(DATA_DIR)
     print(f"Index built in {time.time() - t0:.1f}s")
 
+    all_results = []
+
     # ── 1. Semantic search beats keyword matching ────────────────────────
-    # "quieter ride on rough pavement" shares zero words with the top hit's
-    # title, but the model understands the concept maps to tire noise
-    # reduction and sound-absorbing structures.
-    run_search(
+    # The top hit's title shares no words with the query, demonstrating
+    # that semantic (meaning-based) matching beats keyword matching.
+    all_results += run_search(
         engine,
-        "1) PURE SEMANTIC — no keywords in common with top hits",
-        "quieter ride on rough pavement",
+        "1) PURE SEMANTIC — top hit shares no words with query, "
+        "demonstrating semantic (meaning-based) matching beats keyword matching",
+        "bicycle wheel spoke that reduces vibration",
     )
 
     # ── 2. Same query + classification filter ────────────────────────────
     # Restrict to B60C (tire/tyre patents). Pool shrinks, search speeds up.
-    run_search(
+    all_results += run_search(
         engine,
         "2) SAME QUERY + classification filter (B60C = tires)",
-        "quieter ride on rough pavement",
+        "bicycle wheel spoke that reduces vibration",
         classification_prefix="B60C",
     )
 
     # ── 3. Hybrid: two filters stacked ───────────────────────────────────
-    run_search(
+    all_results += run_search(
         engine,
         "3) HYBRID — classification=B60B + title_contains=\"wheel\"",
         "aerodynamic drag reduction at high speed",
@@ -63,13 +65,25 @@ def main():
     )
 
     # ── 4. Empty result: filters eliminate everything ────────────────────
-    run_search(
+    all_results += run_search(
         engine,
         "4) EMPTY RESULT — impossible filter combination",
         "anything",
         classification_prefix="ZZZZ",
         title_contains="nonexistent",
     )
+
+    # ── Summary tally ────────────────────────────────────────────────────
+    section_counts = {}
+    for r in all_results:
+        s = r["best_section"]
+        section_counts[s] = section_counts.get(s, 0) + 1
+
+    print(f"\n{SEP}")
+    print("  Section match distribution across demo results:")
+    for section in ["abstract", "claim", "description"]:
+        print(f"    {section}: {section_counts.get(section, 0)}")
+    print(SEP)
 
 
 if __name__ == "__main__":
