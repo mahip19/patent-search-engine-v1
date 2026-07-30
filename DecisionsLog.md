@@ -1,236 +1,116 @@
 # Decision Log
 
-This document records the key design decisions behind the search engine — what
-the choice was, what alternatives I weighed, and (importantly) what evidence
-resolved it. Several decisions were deliberately _deferred_ until data was
-available rather than guessed up front; those are called out, because deciding
-_when_ to commit was itself part of the process.
+Why I made each design choice, what I considered, and what actually convinced me.
 
 ---
 
-## 1. Scope: what does the engine actually do?
+## 1. What the engine does
 
-**Decision:** A prior-art / novelty **checker** that ranks and surfaces candidate
-patents. The human makes the final novelty and infringement judgment.
+**Decision:** It's a prior-art checker — finds similar patents so you can review them. The human decides if there's a novelty conflict.
 
-**Alternatives considered:** Early on I mis-modeled the workflow as a tool for
-_building_ a patent's claim list (find similar patents, then somehow incorporate
-them). That was wrong: a patent's claims are the legally enforceable definition of
-_its own_ invention, not a bibliography of similar patents.
-
-**What resolved it:** Reasoning through what a similar-patent result _means_ to the
-user — finding a near-identical existing patent is _bad news_ (the idea may not be
-novel). That reframed the tool from "claim builder" to "prior-art checker," and it
-fixed the success criterion: the engine only has to put the right candidates in
-front of the user, not decide novelty (a much harder, arguably unsolvable, and
-legally inappropriate target for an automated tool).
+I initially thought of it as a tool to help *build* patent claims, but that didn't make sense. A patent's claims define its own invention, they're not a bibliography. Once I realized that finding a similar patent is *bad news* (means your idea might not be novel), the framing clicked: the engine just needs to surface good candidates, not make legal judgments.
 
 ---
 
-## 2. Inputs
+## 2. Query types
 
-**Decision:** Two query modes — short keywords, and a natural-language description
-of the idea.
+**Decision:** Support both short keywords and natural-language descriptions.
 
-**Why:** These map onto the two things a real user does, and they correspond to two
-different matching paradigms: keyword/lexical matching and semantic (meaning-based)
-matching. The natural-language mode is the one that needs embeddings, because a
-relevant patent may describe the same idea in entirely different words.
+These are the two things a user actually does, and they need different matching: keywords work with lexical matching, but a description like "quieter ride on rough pavement" needs semantic matching to find tire noise patents that use totally different words.
 
 ---
 
-## 3. Output format
+## 3. Showing the matching passage
 
-**Decision:** A ranked list of candidate patents, most-similar first, each with a
-similarity score, metadata, and **the specific chunk (claim/paragraph) that
-matched.**
+**Decision:** Each result includes the specific chunk (claim/paragraph) that triggered the match, not just "this patent is related."
 
-**Why:** For a prior-art review, "which claim collides" is more useful than "this
-patent is somewhat related." Showing the matching passage turns the result into
-something the user can immediately act on.
+For a prior-art review, knowing *which claim* might collide is way more useful than a vague similarity score.
 
 ---
 
-## 4. Index granularity: per-patent vs. per-section
+## 4. Per-section chunking vs. one vector per patent
 
-**Decision:** Per-section (chunk-level). Each abstract, each claim, and each
-description paragraph is its own embedded chunk; patents are reassembled at ranking
-time by **max-pooling** (a patent's score = its best chunk's score).
+**Decision:** Break each patent into chunks (one per abstract, one per claim, one per description paragraph) and max-pool at query time.
 
-**Alternative:** One vector per patent (embed concatenated fields). Simpler, one
-score per patent for free, fewer vectors — but it dilutes signal.
-
-**What resolved it — measured evidence:** The data's own length statistics.
-Abstracts median ~714 characters, claims ~4.5K, descriptions ~19K (max ~185K).
-Concatenating and embedding as one vector would let a ~185K-character description
-drown a ~714-character abstract and the actual claims. Per-section keeps each unit
-sharp. At the current scale (~32K chunks) the extra complexity is cheap; the only
-real cost (more vectors) is a scaling concern deferred to Part 2.
+The alternative was to concatenate everything into one vector per patent. Simpler, but the data showed why it wouldn't work well: abstracts are ~714 chars, claims ~4.5K, descriptions can be up to ~185K chars. One big vector would let a huge description completely drown out a short abstract and the claims. Per-section chunking keeps each piece sharp.
 
 ---
 
 ## 5. Which fields to embed
 
-**Decision:** Embed all sections (abstract, claims, description), each tagged with
-its section, so field choice can be revisited at query time without re-embedding.
+**Decision:** Embed everything (abstract, claims, description), but tag each chunk with its section type.
 
-**Reasoning:** Claims are the legally central field for novelty and had to be in.
-Abstract is a clean, dense summary. Description is noisier and longer, and I was
-initially unsure whether to include it. Rather than guess, I embedded everything
-but tagged it — preserving the option to filter or down-weight sections later.
+Claims had to be in — they're the legally important part. Abstract is a clean summary. I wasn't sure about description at first, but instead of guessing, I embedded everything with tags so I could filter or reweight later without re-embedding.
 
-**Corroborating evidence:** The token-truncation measurement showed 9.3% of chunks
-exceed the model's ~256-token window, and almost all of them are long description
-paragraphs — i.e. the truncation self-limits to the field that matters least,
-while claims and abstracts (which fit comfortably) are embedded in full. This made
-"embed everything" cheap to defend.
+It turned out the truncation issue (9.3% of chunks are too long for the model) almost entirely hits description paragraphs, while claims and abstracts fit fine. So "embed everything" was basically free to defend.
 
 ---
 
-## 6. Missing-data policy
+## 6. Missing data
 
-**Decision:** Skip a missing section, never drop the whole patent.
+**Decision:** Skip the missing section, never drop the whole patent.
 
-**What resolved it — measured evidence:** `detailed_description` is missing in
-18.6% of patents (119/640), but every patent has title, abstract, claims, and
-classification. Since claims are the most novelty-relevant field and are always
-present, dropping a patent for a missing description could hide a genuine prior-art
-collision. Skipping just the absent section keeps every patent searchable on its
-strongest fields.
+18.6% of patents are missing `detailed_description`, but every patent has claims and abstract. Since claims are the most important field for novelty checking, dropping a patent because it's missing a description could hide a real prior-art match.
 
 ---
 
 ## 7. Embedding model
 
-**Decision:** `all-MiniLM-L6-v2` (384-dim, CPU-friendly, fast).
+**Decision:** `all-MiniLM-L6-v2` — small, fast, 384 dimensions, runs on CPU.
 
-**Why:** Small and fast enough to build the whole index in ~52 s on CPU and answer
-queries in tens of milliseconds, which is right for a Part 1 MVP over 640 patents.
-Its ~256-token limit is a known tradeoff (see limitation on truncation) accepted in
-exchange for speed and zero-GPU operation.
+Builds the whole index in ~52s and answers queries in ~40ms. The ~256-token limit means some long chunks get truncated, but for a Part 1 MVP over 640 patents, the speed and simplicity is worth that tradeoff.
 
 ---
 
-## 8. Hybrid search: pre-filter vs. post-filter
+## 8. Pre-filter vs. post-filter
 
-**Decision:** Pre-filter — apply metadata filters _before_ the cosine similarity
-math.
+**Decision:** Pre-filter — apply metadata filters *before* similarity math.
 
-**Why, on two axes:**
+Two reasons:
+- **Faster:** similarity only runs on surviving chunks
+- **Correct:** post-filtering picks top-k first, then removes non-matching results, which can leave you with too few results or none. Pre-filtering draws top-k from the valid pool, so this can't happen.
 
-- _Performance:_ the expensive similarity step only runs on surviving chunks, so
-  filtering to a small class does proportionally less work.
-- _Correctness:_ post-filtering (rank first, then drop non-matching) can select a
-  top-k _before_ applying the filter and then gut it — potentially returning far
-  too few results, or none, even when valid matches exist deeper in the ranking.
-  Pre-filtering draws the top-k from the already-valid pool by construction.
-
-**Verification:** Across the three timed runs, a patent that survived every filter
-kept an identical similarity score, confirming the filter acts as a gate on
-_eligibility_ without contaminating the _ranking_.
+Verified by checking that a patent's score stays the same whether or not filters are applied — the filter only gates eligibility, doesn't change ranking.
 
 ---
 
-## 9. Decisions I deferred or revised on evidence
+## 9. Things I deferred or changed my mind on
 
-This section is the honest core of the log — the places I intentionally did _not_
-commit early, and one belief the data overturned.
+This is the honest part.
 
-- **Deferred: abstract+claims vs. embed-everything.** I refused to lock this in
-  until I had run the engine and seen where matches actually came from. The
-  "embed-everything-but-tag" approach meant deferring cost nothing. (Resolved in
-  favor of embedding everything — see #5.)
+- **Deferred: which fields to embed.** I didn't lock this in until I could see where matches came from. The tag-everything approach meant deferring cost nothing.
 
-- **Deferred: index granularity, until the length stats came back.** The
-  per-section decision (#4) was made _because_ of measured field lengths, not on
-  the assumption that descriptions are long.
+- **Deferred: chunking granularity.** I waited for the length stats before committing to per-section chunking. The decision was based on measured field lengths, not assumptions.
 
-- **Revised on evidence: "description is just noise."** My initial instinct was
-  that descriptions were low-signal boilerplate to be down-weighted. The section
-  match distribution overturned this: description chunks won **14 of 15** top
-  results, claims 1, abstracts 0. Descriptions aren't noise — they're where
-  natural-language queries actually land, because plain-prose queries are lexically
-  closer to plain-prose descriptions than to claim legalese, and because
-  descriptions have ~40× more chunks per patent than the abstract, giving
-  max-pooling far more chances to find one strong hit.
+- **Changed my mind: "description is noise."** I expected descriptions to be low-value boilerplate. The data said otherwise — description chunks won 14 of 15 top results in the demo. Turns out natural-language queries land on plain-prose descriptions way more than legal claim language, and descriptions have ~40× more chunks per patent so max-pooling gives them more chances to produce a high-scoring hit.
 
-  This created a real tension: the engine matches on descriptions ~93% of the time,
-  yet a novelty check ultimately cares about **claims**. Rather than paper over it,
-  I documented it as the top known limitation with a concrete proposed fix —
-  **section weighting** (scale claim/abstract similarities up, or description down,
-  before max-pooling) so a strong claim match can surface. I chose to document
-  rather than implement for v1, because Part 1 is functionally complete and the
-  fix is better validated with the labeled-relevance evaluation planned for Part 3
-  than tuned by hand now.
+  This creates a real tension: the engine matches on descriptions ~93% of the time, but a novelty check ultimately cares about claims. I documented this as the top limitation with a proposed fix (section weighting) rather than hacking in a quick solution. Better to validate it properly with labeled relevance data in Part 3.
 
 ---
 
-## 10. Part 2 — scaling architecture: a retrieval funnel
+## 10. Scaling architecture — the funnel
 
-**Decision:** A funnel — metadata pre-filter → quantized ANN coarse retrieval over
-**document-level** vectors (in RAM) → cross-encoder re-rank over hydrated chunks
-only on the ~100 survivors.
+**Decision:** Metadata pre-filter → quantized ANN over document-level vectors (in RAM) → cross-encoder re-rank on hydrated chunks for ~100 survivors.
 
-**Why:** The binding constraint at 10M patents is memory, not build time (patents
-arrive in weekly batches, so indexing is an offline job). 500M chunk vectors ≈
-768 GB won't fit in RAM, but 10M _document-level_ vectors quantized to int8 ≈
-~4 GB will. So chunk-level precision — which Part 1 relies on — is too expensive to
-run across the whole corpus, but is affordable as a _second phase_ on a small
-survivor set. The funnel keeps Part 1's chunk-level, show-the-matching-claim
-behavior while staying within a single-machine memory budget for the hot path.
+The problem: 500M chunk vectors won't fit in RAM (~768 GB). But 10M document-level vectors quantized to int8 ≈ ~4 GB will. So we do chunk-level scoring only in Phase 2 on a small survivor set instead of across the whole corpus. This keeps Part 1's behavior (show the matching claim) while staying within a single machine's memory budget.
 
-**Acknowledged tradeoffs (not hidden):** Phase-1 recall caps everything downstream;
-the cross-encoder is the cost/latency driver; unfiltered queries force cross-shard
-scatter-gather; and updating a quantized, sharded ANN index is genuinely awkward
-(mitigated by shadow-index-and-swap). These are documented in the design doc's
-challenges section per the task's guidance to pick something simple and name its
-weaknesses.
+Tradeoffs I'm aware of: Phase 1 recall caps everything, cross-encoder is the cost driver, unfiltered queries need scatter-gather across shards, updating quantized HNSW indexes is awkward. All documented in the design doc with mitigations.
 
-## 11. Part 2 — proof-of-concept: which piece to build
+## 11. Which PoC to build
 
-**Decision:** Build the **PostgreSQL metadata store** with indexed hybrid
-pre-filtering, plus a thin status view fed by real data.
+**Decision:** Postgres metadata store with indexed pre-filtering + a live status view.
 
-**Alternatives considered (from the task's menu):**
+Other options I considered:
+- Status dashboard from dummy data — proves nothing real
+- Full FAISS index — too much for a quick PoC
+- Containerize Part 1 — just plumbing, no design substance
 
-- _Status dashboard from dummy data_ — satisfies the monitoring ask but proves no
-  real pipeline piece; disconnected from the actual engine.
-- _Real ANN/FAISS index_ — highest-fidelity, but beyond the depth I could confidently
-  defend in review, and over-engineered for a 15-minute PoC.
-- _Containerize Part 1_ — low signal; plumbing, not system design.
-- _Postgres metadata store_ — chosen: simple, within depth, and a **real component
-  from the design doc** that proves a concrete claim.
+The Postgres store was the best fit because it directly fixes a Part 1 limitation (the Python-loop filter becomes a fast indexed DB query) and the status view shows real data instead of dummy counts. It makes a clean story: identified a limitation → designed the fix → built and proved it works.
 
-**Why this one:** It directly fixes a real Part 1 limitation. Part 1's hybrid filter
-scanned every chunk in Python; at scale that is the bottleneck. Pushing the filter
-into an indexed Postgres column turns it into a fast lookup. I combined it with the
-status-view idea so the "dashboard" reads _real_ counts (indexed total, status
-breakdown, top classifications, freshness) rather than dummy data — satisfying the
-design doc's "track contents & status" requirement with a live component. This makes
-a coherent Part 1 → Part 2 story: limitation identified → fix designed → fix built
-and proven.
-
-**What I proved, and an honest nuance:** `EXPLAIN ANALYZE` shows a Bitmap Index Scan
-on the classification index for `LIKE 'B60B%'` (Postgres rewrites the prefix into a
-range walk). At 640 rows the optimizer would actually prefer a sequential scan —
-correctly, because the table is tiny — so I forced the index path with
-`enable_seqscan=off` purely to demonstrate it works; at millions of rows the
-optimizer chooses the index on its own. Naming _why_ the optimizer behaves this way,
-rather than pretending the tiny-table result is production-representative, is the
-honest framing. I also hit and handled the standard Postgres gotcha that `LIKE`
-prefix queries need `text_pattern_ops` on the index to use it under default
-collations.
+`EXPLAIN ANALYZE` showed Postgres using a Bitmap Index Scan for `LIKE 'B60B%'`. At 640 rows it would normally prefer a sequential scan (correct for tiny tables), so I forced the index path to demonstrate it works. At millions of rows the optimizer picks the index automatically. The index needed `text_pattern_ops` to support prefix LIKE queries — a standard Postgres thing I had to handle.
 
 ---
 
 ## Summary
 
-The decisions that most shaped the system: framing it as a _checker_ (not a claim
-builder), choosing _per-section_ granularity to protect claim signal, and using
-_pre-filtered_ hybrid search for both speed and correctness. For scale (Part 2), the
-same pre-filter idea became a Postgres-backed indexed lookup, and the query path
-became a funnel that defers expensive chunk-level scoring to a small survivor set.
-The pattern I tried to hold throughout was to **defer decisions that depended on
-data until I had the data, and to let measurements — field lengths, missing-field
-rates, truncation counts, the section match distribution, and query plans — override
-my priors** rather than committing to assumptions up front.
+The decisions that shaped the system most: framing it as a *checker* not a builder, per-section chunking to protect claim signal, and pre-filtered hybrid search for speed and correctness. For scaling, the pre-filter became a Postgres indexed lookup, and search became a funnel that defers expensive chunk scoring to a small survivor set. I tried to defer decisions until I had data, and let measurements (field lengths, missing rates, truncation counts, match distribution, query plans) override my assumptions.
