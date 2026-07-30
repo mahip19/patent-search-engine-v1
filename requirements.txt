@@ -1,2 +1,6 @@
 numpy
 sentence-transformers
+datasets
+accelerate
+flask
+flask-cors

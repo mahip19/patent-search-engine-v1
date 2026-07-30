@@ -116,15 +116,13 @@ bridge to the Part 2 scaling design.)
 
 ## How to run
 
-**Requirements:** Python 3.9+, and the packages in `requirements.txt`
-(`sentence-transformers`, `numpy`). Install:
+**Requirements:** Python 3.9+, and the packages in `requirements.txt`. Install:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Place the `patents_ipa*.json` data files in the project directory (or point the
-scripts at their location).
+Place the `patents_ipa*.json` data files in `data/patent_data_small/`.
 
 **Explore the data (optional, reconnaissance):**
 
@@ -158,6 +156,16 @@ The demo runs a pure-semantic query, the same query with a classification
 filter, a two-filter hybrid query, and an empty-result case, printing pool
 sizes and timings for each.
 
+**Run the web UI (optional — browser-based search):**
+
+```bash
+python3 app.py
+# open http://localhost:5001
+```
+
+The web UI builds the index once on startup (~52s), then serves a search page
+where you can type queries and apply filters interactively.
+
 ---
 
 ## Project structure
@@ -167,12 +175,14 @@ sizes and timings for each.
 | `patent_index.py`       | Core engine: `load_and_chunk`, `embed_chunks`, `PatentSearchEngine` (semantic + hybrid search, max-pooling), plus a CLI.                      |
 | `demo.py`               | Scripted, readable demonstration of all search modes.                                                                                         |
 | `explore_data.py`       | Data-reconnaissance script (field coverage, types, length stats).                                                                             |
+| `app.py`                | Flask web UI — serves a browser-based search interface at `localhost:5001`.                                                                    |
+| `static/index.html`     | Frontend for the web UI (single self-contained HTML file, no build step).                                                                     |
 | `poc_metadata_store.py` | **Part 2 proof-of-concept:** PostgreSQL metadata store with indexed hybrid pre-filtering (`EXPLAIN ANALYZE`-verified) and a live status view. |
-| `SCALING_DESIGN.md`     | **Part 2 design doc:** how the engine scales to 10M patents (components, pipelines, cost, error handling, monitoring, challenges).            |
+| `DesignScale.md`        | **Part 2 design doc:** how the engine scales to 10M patents (components, pipelines, cost, error handling, monitoring, challenges).            |
 | `rerank.py`             | **Part 3:** two-phase search — Part 1 retrieval + a cross-encoder re-ranker.                                                                  |
 | `evaluate.py`           | **Part 3:** evaluation (Recall@1/@10, MRR) + a small fine-tune of the embedding model.                                                        |
 | `requirements.txt`      | Dependencies.                                                                                                                                 |
-| `DECISIONS.md`          | Decision log — the reasoning behind each design choice.                                                                                       |
+| `DecisionsLog.md`       | Decision log — the reasoning behind each design choice.                                                                                       |
 
 ---
 
@@ -180,7 +190,7 @@ sizes and timings for each.
 
 Part 2 has two deliverables:
 
-**Design doc (`SCALING_DESIGN.md`).** Describes how this engine runs at 10M
+**Design doc (`DesignScale.md`).** Describes how this engine runs at 10M
 patents. The chunk-level design surfaces the core scaling tension: 640 patents
 produced ~32K chunks (~50× multiplier), so 10M patents implies ~500M chunks. The
 design addresses this with a retrieval funnel — metadata pre-filtering →
@@ -217,7 +227,13 @@ automatically.
 ## Part 3 — Enhancements
 
 I picked two enhancements: **two-phase search (re-ranking)** and **evaluation +
-fine-tuning**.
+fine-tuning**. I chose these because Part 1's biggest weakness was that
+description chunks dominated results over claims (the legally important part).
+Re-ranking directly addresses this — a cross-encoder reads query and chunk
+together and can recognize claim relevance that a bi-encoder misses. Evaluation
++ fine-tuning lets me actually measure whether the fix works, and fine-tuning
+teaches the bi-encoder to better connect abstract-style queries with claim
+language.
 
 ### Enhancement 1: two-phase search with a re-ranker (`rerank.py`)
 

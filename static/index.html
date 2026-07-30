@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Patent Prior-Art Search</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#F5F6F3;--panel:#FCFCFB;--ink:#191B1A;--muted:#71756F;
+  --hairline:#E0E3DE;--accent:#2C4A63;--highlight:#C7DBE6;
+  --mono:"IBM Plex Mono",monospace;--sans:"Space Grotesk",sans-serif;
+  --grid:26px;
+}
+
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+
+html{font-size:15px}
+body{
+  font-family:var(--sans);color:var(--ink);background:var(--bg);
+  min-height:100vh;line-height:1.55;
+  background-image:
+    linear-gradient(var(--hairline) 1px,transparent 1px),
+    linear-gradient(90deg,var(--hairline) 1px,transparent 1px);
+  background-size:var(--grid) var(--grid);
+  background-position:center center;
+}
+
+.wrap{max-width:860px;margin:0 auto;padding:2.4rem 1.2rem 4rem}
+
+/* ── header ─────────────────────────────────── */
+header{margin-bottom:2rem}
+.wordmark{font-weight:600;font-size:1.25rem;letter-spacing:-.02em;color:var(--accent)}
+.tagline{font-family:var(--mono);font-size:.78rem;color:var(--muted);margin-top:.15rem}
+
+/* ── search panel ───────────────────────────── */
+.search-panel{
+  background:var(--panel);border:1px solid var(--hairline);
+  border-radius:2px;padding:1.6rem 1.5rem 1.4rem;
+  position:relative;
+}
+
+/* registration marks */
+.search-panel::before,.search-panel::after,
+.search-panel .mark-bl,.search-panel .mark-br{
+  content:"";position:absolute;pointer-events:none;
+}
+.search-panel::before{top:-1px;left:-1px;width:14px;height:14px;border-top:2px solid var(--accent);border-left:2px solid var(--accent)}
+.search-panel::after{top:-1px;right:-1px;width:14px;height:14px;border-top:2px solid var(--accent);border-right:2px solid var(--accent)}
+.search-panel .mark-bl{position:absolute;bottom:-1px;left:-1px;width:14px;height:14px;border-bottom:2px solid var(--accent);border-left:2px solid var(--accent)}
+.search-panel .mark-br{position:absolute;bottom:-1px;right:-1px;width:14px;height:14px;border-bottom:2px solid var(--accent);border-right:2px solid var(--accent)}
+
+.query-row{display:flex;gap:.6rem;margin-bottom:.8rem}
+.query-row input{
+  flex:1;font-family:var(--sans);font-size:.95rem;
+  padding:.6rem .75rem;border:1px solid var(--hairline);
+  border-radius:2px;background:var(--bg);color:var(--ink);
+  outline:none;transition:border-color .15s;
+}
+.query-row input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--highlight)}
+.query-row button{
+  font-family:var(--mono);font-weight:500;font-size:.82rem;
+  padding:.6rem 1.3rem;background:var(--accent);color:#fff;
+  border:none;border-radius:2px;cursor:pointer;
+  letter-spacing:.03em;white-space:nowrap;transition:background .15s;
+}
+.query-row button:hover{background:#1e3a50}
+.query-row button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.query-row button:disabled{opacity:.55;cursor:default}
+
+.filters{display:flex;gap:.6rem;flex-wrap:wrap}
+.filters label{
+  display:flex;flex-direction:column;gap:.2rem;flex:1;min-width:200px;
+}
+.filters .label-text{font-family:var(--mono);font-size:.7rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.filters input{
+  font-family:var(--mono);font-size:.82rem;padding:.45rem .6rem;
+  border:1px solid var(--hairline);border-radius:2px;
+  background:var(--bg);color:var(--ink);outline:none;
+  transition:border-color .15s;
+}
+.filters input:focus{border-color:var(--accent);box-shadow:0 0 0 2px var(--highlight)}
+
+/* ── meta line ──────────────────────────────── */
+.meta{
+  font-family:var(--mono);font-size:.75rem;color:var(--muted);
+  margin-top:1.2rem;min-height:1.2em;
+}
+
+/* ── results ────────────────────────────────── */
+.results{margin-top:1rem}
+
+.card{
+  background:var(--panel);border:1px solid var(--hairline);
+  border-radius:2px;padding:1.1rem 1.3rem;
+  margin-bottom:.6rem;
+}
+
+.card-header{display:flex;align-items:baseline;gap:.6rem;flex-wrap:wrap;margin-bottom:.35rem}
+.rank{font-family:var(--mono);font-weight:500;font-size:.82rem;color:var(--muted);min-width:2ch}
+.card-title{font-weight:500;font-size:.95rem;flex:1;min-width:0}
+
+.card-meta{
+  display:flex;align-items:center;gap:.5rem;flex-wrap:wrap;
+  font-family:var(--mono);font-size:.72rem;color:var(--muted);
+  margin-bottom:.6rem;
+}
+.badge{
+  background:var(--highlight);color:var(--accent);
+  padding:.15rem .45rem;border-radius:2px;font-weight:500;
+}
+.section-tag{
+  border:1px solid var(--hairline);padding:.12rem .4rem;
+  border-radius:2px;
+}
+
+.excerpt{
+  font-size:.85rem;color:var(--ink);line-height:1.6;
+  border-left:2px solid var(--accent);padding-left:.9rem;
+  margin-left:.15rem;
+  overflow-wrap:break-word;
+  max-height:6.4em;overflow:hidden;
+  position:relative;
+}
+.excerpt.expanded{max-height:none}
+.excerpt::after{
+  content:"";position:absolute;bottom:0;left:0;right:0;
+  height:1.6em;background:linear-gradient(transparent,var(--panel));
+  pointer-events:none;
+}
+.excerpt.expanded::after{display:none}
+
+.empty-state{
+  font-family:var(--mono);font-size:.82rem;color:var(--muted);
+  text-align:center;padding:2.5rem 1rem;
+}
+
+/* ── spinner ────────────────────────────────── */
+.spinner{display:none;margin-left:.5rem}
+.spinner.active{display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}
+.spinner svg{width:16px;height:16px;animation:spin .7s linear infinite;vertical-align:middle}
+
+/* ── responsive ─────────────────────────────── */
+@media(max-width:600px){
+  .query-row{flex-direction:column}
+  .filters{flex-direction:column}
+  .filters label{min-width:0}
+  .card-header{flex-direction:column;gap:.25rem}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div class="wordmark">Patent Prior-Art Search</div>
+  <div class="tagline">Semantic search over 640 patents &middot; hybrid pre-filtered</div>
+</header>
+
+<div class="search-panel">
+  <div class="mark-bl"></div>
+  <div class="mark-br"></div>
+  <form id="searchForm">
+    <div class="query-row">
+      <input type="text" id="query" placeholder="Describe an invention or enter keywords…" autocomplete="off" autofocus>
+      <button type="submit" id="searchBtn">SEARCH<span class="spinner" id="spinner"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10" stroke-dasharray="50 20" /></svg></span></button>
+    </div>
+    <div class="filters">
+      <label>
+        <span class="label-text">Classification prefix</span>
+        <input type="text" id="classification" placeholder="e.g. B60B">
+      </label>
+      <label>
+        <span class="label-text">Title contains</span>
+        <input type="text" id="titleContains" placeholder="e.g. wheel">
+      </label>
+    </div>
+  </form>
+</div>
+
+<div class="meta" id="meta"></div>
+<div class="results" id="results"></div>
+
+</div>
+
+<script>
+const form = document.getElementById("searchForm");
+const queryInput = document.getElementById("query");
+const classInput = document.getElementById("classification");
+const titleInput = document.getElementById("titleContains");
+const metaEl = document.getElementById("meta");
+const resultsEl = document.getElementById("results");
+const searchBtn = document.getElementById("searchBtn");
+const spinner = document.getElementById("spinner");
+
+let controller = null;
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const query = queryInput.value.trim();
+  if (!query) return;
+
+  if (controller) controller.abort();
+  controller = new AbortController();
+
+  searchBtn.disabled = true;
+  spinner.classList.add("active");
+  metaEl.textContent = "Searching…";
+  resultsEl.innerHTML = "";
+
+  try {
+    const params = new URLSearchParams({ query });
+    const cls = classInput.value.trim();
+    const title = titleInput.value.trim();
+    if (cls) params.set("classification", cls);
+    if (title) params.set("title_contains", title);
+
+    const res = await fetch("/api/search?" + params.toString(), { signal: controller.signal });
+    const data = await res.json();
+
+    if (data.count === 0) {
+      metaEl.textContent = "0 results";
+      resultsEl.innerHTML = '<div class="empty-state">No patents match. Loosen a filter or try different keywords.</div>';
+      return;
+    }
+
+    metaEl.textContent = data.count + " result" + (data.count === 1 ? "" : "s") + " in " + data.time_ms + " ms";
+    resultsEl.innerHTML = data.results.map((r, i) => card(r, i + 1)).join("");
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    metaEl.textContent = "";
+    resultsEl.innerHTML = '<div class="empty-state">Something went wrong. Is the server running?</div>';
+  } finally {
+    searchBtn.disabled = false;
+    spinner.classList.remove("active");
+  }
+});
+
+function card(r, rank) {
+  const rk = String(rank).padStart(2, "0");
+  const score = r.score.toFixed(3);
+  const snippet = esc(r.best_chunk_text);
+  return '<div class="card">'
+    + '<div class="card-header">'
+    +   '<span class="rank">' + rk + '</span>'
+    +   '<span class="card-title">' + esc(r.title) + '</span>'
+    + '</div>'
+    + '<div class="card-meta">'
+    +   '<span class="badge">' + esc(r.classification) + '</span>'
+    +   '<span>US' + esc(r.patent_id) + '</span>'
+    +   '<span class="section-tag">matched in ' + esc(r.best_section) + '</span>'
+    +   '<span>' + score + '</span>'
+    + '</div>'
+    + '<div class="excerpt" onclick="this.classList.toggle(\'expanded\')">' + snippet + '</div>'
+    + '</div>';
+}
+
+function esc(s) {
+  if (!s) return "";
+  const d = document.createElement("div");
+  d.textContent = s;
+  return d.innerHTML;
+}
+</script>
+</body>
+</html>
