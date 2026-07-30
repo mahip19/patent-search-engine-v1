@@ -162,23 +162,59 @@ sizes and timings for each.
 
 ## Project structure
 
-| File               | Purpose                                                                                                                  |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `patent_index.py`  | Core engine: `load_and_chunk`, `embed_chunks`, `PatentSearchEngine` (semantic + hybrid search, max-pooling), plus a CLI. |
-| `demo.py`          | Scripted, readable demonstration of all search modes.                                                                    |
-| `explore_data.py`  | Data-reconnaissance script (field coverage, types, length stats).                                                        |
-| `requirements.txt` | Dependencies.                                                                                                            |
-| `DECISIONS.md`     | Decision log — the reasoning behind each design choice.                                                                  |
+| File                    | Purpose                                                                                                                                       |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `patent_index.py`       | Core engine: `load_and_chunk`, `embed_chunks`, `PatentSearchEngine` (semantic + hybrid search, max-pooling), plus a CLI.                      |
+| `demo.py`               | Scripted, readable demonstration of all search modes.                                                                                         |
+| `explore_data.py`       | Data-reconnaissance script (field coverage, types, length stats).                                                                             |
+| `poc_metadata_store.py` | **Part 2 proof-of-concept:** PostgreSQL metadata store with indexed hybrid pre-filtering (`EXPLAIN ANALYZE`-verified) and a live status view. |
+| `SCALING_DESIGN.md`     | **Part 2 design doc:** how the engine scales to 10M patents (components, pipelines, cost, error handling, monitoring, challenges).            |
+| `requirements.txt`      | Dependencies.                                                                                                                                 |
+| `DECISIONS.md`          | Decision log — the reasoning behind each design choice.                                                                                       |
 
 ---
 
-## Where this goes next (Parts 2 & 3)
+## Part 2 — Implementation at scale
 
-The chunk-level design already surfaces the core scaling tension: 640 patents
+Part 2 has two deliverables:
+
+**Design doc (`SCALING_DESIGN.md`).** Describes how this engine runs at 10M
+patents. The chunk-level design surfaces the core scaling tension: 640 patents
 produced ~32K chunks (~50× multiplier), so 10M patents implies ~500M chunks. The
-Part 2 design addresses this with a funnel — metadata pre-filtering, quantized
-approximate-nearest-neighbor indexing for coarse retrieval, and a precise
-chunk-level re-rank only on the surviving candidates — so chunk-level precision
-becomes an affordable second phase rather than a corpus-wide cost. Candidate Part
-3 enhancements include the section-weighting fix above, a cross-encoder re-ranker,
-and evaluation of embedding quality against labeled prior-art pairs.
+design addresses this with a retrieval funnel — metadata pre-filtering →
+quantized approximate-nearest-neighbor coarse retrieval over document-level
+vectors (fits in RAM) → precise cross-encoder re-rank only on the ~100 surviving
+candidates — so chunk-level precision becomes an affordable second phase rather
+than a corpus-wide cost. The doc covers system components, ingestion and
+query-serving pipelines, an order-of-magnitude cost breakdown, error handling,
+status/monitoring, and the major challenges at scale (each with a mitigation).
+
+**Proof-of-concept (`poc_metadata_store.py`).** Builds one real component from
+the design — the PostgreSQL metadata store — and proves the piece that Part 1
+did with a Python loop can be done as a fast indexed lookup. It creates a
+`patents` table with a b-tree index (`text_pattern_ops`) on classification,
+loads the sample idempotently, runs indexed hybrid pre-filters, and prints
+`EXPLAIN ANALYZE` showing a Bitmap Index Scan (not a sequential scan) for
+`classification LIKE 'B60B%'`. It also prints a live status view (indexed count,
+status breakdown, top classifications, freshness), implementing the design doc's
+"track contents & status" requirement with real data.
+
+Run it (requires a local PostgreSQL and `psycopg2-binary`):
+
+```bash
+pip install psycopg2-binary
+# defaults to postgresql://localhost/patents ; override with DATABASE_URL
+python3 poc_metadata_store.py
+```
+
+Note: at 640 rows Postgres would rationally prefer a sequential scan (cheaper for
+a tiny table), so the PoC forces the index path (`enable_seqscan=off`) purely to
+demonstrate it works; at production scale the optimizer selects the index
+automatically.
+
+## Part 3 — Enhancements (in progress)
+
+Candidate enhancements include a two-phase cross-encoder re-ranker (which also
+addresses the description-dominance limitation above by scoring the query against
+full passages) and evaluation of embedding quality against labeled prior-art
+pairs.

@@ -165,12 +165,72 @@ commit early, and one belief the data overturned.
 
 ---
 
+## 10. Part 2 — scaling architecture: a retrieval funnel
+
+**Decision:** A funnel — metadata pre-filter → quantized ANN coarse retrieval over
+**document-level** vectors (in RAM) → cross-encoder re-rank over hydrated chunks
+only on the ~100 survivors.
+
+**Why:** The binding constraint at 10M patents is memory, not build time (patents
+arrive in weekly batches, so indexing is an offline job). 500M chunk vectors ≈
+768 GB won't fit in RAM, but 10M _document-level_ vectors quantized to int8 ≈
+~4 GB will. So chunk-level precision — which Part 1 relies on — is too expensive to
+run across the whole corpus, but is affordable as a _second phase_ on a small
+survivor set. The funnel keeps Part 1's chunk-level, show-the-matching-claim
+behavior while staying within a single-machine memory budget for the hot path.
+
+**Acknowledged tradeoffs (not hidden):** Phase-1 recall caps everything downstream;
+the cross-encoder is the cost/latency driver; unfiltered queries force cross-shard
+scatter-gather; and updating a quantized, sharded ANN index is genuinely awkward
+(mitigated by shadow-index-and-swap). These are documented in the design doc's
+challenges section per the task's guidance to pick something simple and name its
+weaknesses.
+
+## 11. Part 2 — proof-of-concept: which piece to build
+
+**Decision:** Build the **PostgreSQL metadata store** with indexed hybrid
+pre-filtering, plus a thin status view fed by real data.
+
+**Alternatives considered (from the task's menu):**
+
+- _Status dashboard from dummy data_ — satisfies the monitoring ask but proves no
+  real pipeline piece; disconnected from the actual engine.
+- _Real ANN/FAISS index_ — highest-fidelity, but beyond the depth I could confidently
+  defend in review, and over-engineered for a 15-minute PoC.
+- _Containerize Part 1_ — low signal; plumbing, not system design.
+- _Postgres metadata store_ — chosen: simple, within depth, and a **real component
+  from the design doc** that proves a concrete claim.
+
+**Why this one:** It directly fixes a real Part 1 limitation. Part 1's hybrid filter
+scanned every chunk in Python; at scale that is the bottleneck. Pushing the filter
+into an indexed Postgres column turns it into a fast lookup. I combined it with the
+status-view idea so the "dashboard" reads _real_ counts (indexed total, status
+breakdown, top classifications, freshness) rather than dummy data — satisfying the
+design doc's "track contents & status" requirement with a live component. This makes
+a coherent Part 1 → Part 2 story: limitation identified → fix designed → fix built
+and proven.
+
+**What I proved, and an honest nuance:** `EXPLAIN ANALYZE` shows a Bitmap Index Scan
+on the classification index for `LIKE 'B60B%'` (Postgres rewrites the prefix into a
+range walk). At 640 rows the optimizer would actually prefer a sequential scan —
+correctly, because the table is tiny — so I forced the index path with
+`enable_seqscan=off` purely to demonstrate it works; at millions of rows the
+optimizer chooses the index on its own. Naming _why_ the optimizer behaves this way,
+rather than pretending the tiny-table result is production-representative, is the
+honest framing. I also hit and handled the standard Postgres gotcha that `LIKE`
+prefix queries need `text_pattern_ops` on the index to use it under default
+collations.
+
+---
+
 ## Summary
 
 The decisions that most shaped the system: framing it as a _checker_ (not a claim
 builder), choosing _per-section_ granularity to protect claim signal, and using
-_pre-filtered_ hybrid search for both speed and correctness. The pattern I tried to
-hold throughout was to **defer decisions that depended on data until I had the
-data, and to let measurements — field lengths, missing-field rates, truncation
-counts, and the section match distribution — override my priors** rather than
-committing to assumptions up front.
+_pre-filtered_ hybrid search for both speed and correctness. For scale (Part 2), the
+same pre-filter idea became a Postgres-backed indexed lookup, and the query path
+became a funnel that defers expensive chunk-level scoring to a small survivor set.
+The pattern I tried to hold throughout was to **defer decisions that depended on
+data until I had the data, and to let measurements — field lengths, missing-field
+rates, truncation counts, the section match distribution, and query plans — override
+my priors** rather than committing to assumptions up front.
