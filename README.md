@@ -186,87 +186,63 @@ where you can type queries and apply filters interactively.
 
 ---
 
-## Part 2 — Implementation at scale
+## Part 2: Scaling
 
-Part 2 has two deliverables:
+Two deliverables here.
 
-**Design doc (`DesignScale.md`).** Describes how this engine runs at 10M
-patents. The chunk-level design surfaces the core scaling tension: 640 patents
-produced ~32K chunks (~50× multiplier), so 10M patents implies ~500M chunks. The
-design addresses this with a retrieval funnel — metadata pre-filtering →
-quantized approximate-nearest-neighbor coarse retrieval over document-level
-vectors (fits in RAM) → precise cross-encoder re-rank only on the ~100 surviving
-candidates — so chunk-level precision becomes an affordable second phase rather
-than a corpus-wide cost. The doc covers system components, ingestion and
-query-serving pipelines, an order-of-magnitude cost breakdown, error handling,
-status/monitoring, and the major challenges at scale (each with a mitigation).
+**Design doc (`DesignScale.md`)** covers how this would work at 10M patents.
 
-**Proof-of-concept (`poc_metadata_store.py`).** Builds one real component from
-the design — the PostgreSQL metadata store — and proves the piece that Part 1
-did with a Python loop can be done as a fast indexed lookup. It creates a
-`patents` table with a b-tree index (`text_pattern_ops`) on classification,
-loads the sample idempotently, runs indexed hybrid pre-filters, and prints
-`EXPLAIN ANALYZE` showing a Bitmap Index Scan (not a sequential scan) for
-`classification LIKE 'B60B%'`. It also prints a live status view (indexed count,
-status breakdown, top classifications, freshness), implementing the design doc's
-"track contents & status" requirement with real data.
+The core problem: 640 patents already make ~32K chunks, so 10M patents would mean ~500M chunks (~768 GB of vectors). That doesn't fit in memory. The solution is a funnel:
+- Filter by metadata first (fast, uses DB indexes)
+- Run approximate nearest neighbor search on compact document level vectors (fits in RAM)
+- Only run the expensive cross encoder re-rank on ~100 survivors
 
-Run it (requires a local PostgreSQL and `psycopg2-binary`):
+The doc also covers ingestion pipelines, cost estimates, error handling, monitoring, and the main risks.
+
+**PoC (`poc_metadata_store.py`)** builds one real piece from that design: a Postgres metadata store.
+
+What it does:
+- Creates a `patents` table with b-tree indexes for classification prefix lookups
+- Loads all 640 patents idempotently (ON CONFLICT DO NOTHING)
+- Runs filtered queries and shows `EXPLAIN ANALYZE` proving Postgres uses the index, not a full table scan
+- Prints a status dashboard with real data (total indexed, top classifications, freshness)
+
+At 640 rows Postgres would normally prefer a sequential scan (faster for tiny tables), so the PoC forces index usage to prove it works. At real scale the optimizer picks the index on its own.
 
 ```bash
 pip install psycopg2-binary
-# defaults to postgresql://localhost/patents ; override with DATABASE_URL
+# defaults to postgresql://localhost/patents, override with DATABASE_URL
 python3 poc_metadata_store.py
 ```
 
-Note: at 640 rows Postgres would rationally prefer a sequential scan (cheaper for
-a tiny table), so the PoC forces the index path (`enable_seqscan=off`) purely to
-demonstrate it works; at production scale the optimizer selects the index
-automatically.
+## Part 3: Enhancements
 
-## Part 3 — Enhancements
+I picked **two phase search (re-ranking)** and **evaluation + fine-tuning**.
 
-I picked two enhancements: **two-phase search (re-ranking)** and **evaluation +
-fine-tuning**. I chose these because Part 1's biggest weakness was that
-description chunks dominated results over claims (the legally important part).
-Re-ranking directly addresses this — a cross-encoder reads query and chunk
-together and can recognize claim relevance that a bi-encoder misses. Evaluation
-+ fine-tuning lets me actually measure whether the fix works, and fine-tuning
-teaches the bi-encoder to better connect abstract-style queries with claim
-language.
+Why these two: Part 1's biggest weakness was that description chunks dominated results over claims, which are the legally important part. Re-ranking fixes this because a cross encoder reads query and chunk together and can recognize claim relevance better. Evaluation lets me actually measure if things improved, and fine-tuning teaches the model to connect abstract style queries with claim language.
 
-### Enhancement 1: two-phase search with a re-ranker (`rerank.py`)
+### Enhancement 1: Re-ranker (`rerank.py`)
 
-Part 1's search is fast but a bit rough. A common fix is to do search in two
-steps: first use the fast search to grab the top ~50 candidates, then use a
-slower but smarter model to re-score just those and reorder them.
+Adds a second pass after Part 1's search:
+- Phase 1: the fast bi-encoder grabs top 50 candidates
+- Phase 2: a cross encoder scores each candidate by reading the query and patent text together (not as separate vectors), then re-sorts by that score
 
-- **Phase 1 (fast):** the Part 1 engine grabs the top 50 patents.
-- **Phase 2 (smart):** a _cross-encoder_ reads the query and each patent's text
-  together (instead of comparing them as separate vectors) and gives a better
-  relevance score. We re-sort the 50 by that score.
-
-What happened when I ran it: the top result stayed the same, but 4 of the top 5
-changed — patents that were genuinely about the query got pulled up. The
-cross-encoder was ~35× slower than Part 1's search (2.1s vs 59ms for 50
-candidates). That slowness is exactly why the Part 2 design only runs it on a
-small set of survivors, never the whole database.
+What I saw:
+- Top result stayed the same, but 4 of the top 5 changed as more relevant patents got pulled up
+- Phase 2 was ~35x slower (2.1s vs 59ms), which is why the Part 2 design only runs it on a small survivor set
 
 ```bash
 python3 rerank.py
 ```
 
-### Enhancement 2: evaluation + fine-tuning (`evaluate.py`)
+### Enhancement 2: Evaluation + fine-tuning (`evaluate.py`)
 
-To measure how good the engine actually is, I needed a set of "right answers"
-without labeling anything by hand. The trick: **use each patent's abstract as a
-search query — the correct result is that same patent.** To keep it fair, the
-search index for this test contains only claims and descriptions (no abstracts),
-so a query can't just match its own abstract.
+I needed ground truth without hand labeling. The trick: use each patent's abstract as a query, and the correct answer is that same patent. To prevent cheating, the eval index has no abstract chunks (only claims and descriptions).
 
-I also split the patents 80/20 into train/test, fine-tuned a copy of the model on
-the training half (teaching it that a patent's abstract and its claims go
-together), and measured everything on the held-out test half.
+Setup:
+- 80/20 train/test split (512 train, 128 test, fixed seed)
+- Three evaluations on the test set: (A) baseline bi-encoder, (B) baseline + cross encoder rerank on 30 queries, (C) fine-tuned bi-encoder
+- Fine-tuning uses (abstract, claim) pairs from train patents with MultipleNegativesRankingLoss, 1 epoch
 
 Results (128 test patents):
 
@@ -276,21 +252,10 @@ Results (128 test patents):
 | Recall@10 | 0.977    | **1.000**        | 0.992      |
 | MRR       | 0.889    | 0.815            | **0.951**  |
 
-Reading the table honestly:
-
-- **Fine-tuning clearly helped.** Recall@1 went from 84% to 92% and MRR from 0.89
-  to 0.95, after only ~100 seconds of training on ~4,000 pairs. Note that the
-  training goal (match abstracts to claims) lines up closely with what the test
-  measures, so the model was well-suited to this particular metric.
-- **The re-rank column isn't directly comparable** — it was measured on a smaller
-  30-query subset to save time, so its numbers sit on a different scale. Its
-  Recall@10 of 1.000 is a good sign, but I wouldn't read too much into the 0.700.
-  Also, this test (find a patent from its own abstract) is a _retrieval_ test, and
-  re-rankers help most when there's ranking to fix — with the baseline already at
-  84%, there wasn't much room.
-- **The baseline being 0.836, not 1.0, is a good sign** — it confirms the
-  "no abstracts in the index" safeguard worked (otherwise every patent would match
-  itself and the score would be a meaningless ~1.0).
+Takeaways:
+- Fine-tuning bumped Recall@1 from 84% to 92% after ~100s of training on ~4,000 pairs
+- The re-rank column was measured on only 30 queries so it's not directly comparable to the others
+- Baseline being 0.836 (not 1.0) confirms the "no abstracts in index" safeguard worked
 
 ```bash
 python3 evaluate.py
