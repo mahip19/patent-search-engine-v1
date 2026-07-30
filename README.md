@@ -156,16 +156,6 @@ The demo runs a pure-semantic query, the same query with a classification
 filter, a two-filter hybrid query, and an empty-result case, printing pool
 sizes and timings for each.
 
-**Run the web UI (optional — browser-based search):**
-
-```bash
-python3 app.py
-# open http://localhost:5001
-```
-
-The web UI builds the index once on startup (~52s), then serves a search page
-where you can type queries and apply filters interactively.
-
 ---
 
 ## Project structure
@@ -260,3 +250,21 @@ Takeaways:
 ```bash
 python3 evaluate.py
 ```
+
+## Additional feature: Web UI
+
+A small browser based search interface on top of the Part 1 engine.
+
+- `app.py` is a Flask backend that builds the `PatentSearchEngine` once on startup and exposes a `/api/search` endpoint
+- `static/index.html` is the frontend (single self-contained file, no build step)
+- Supports the same hybrid search: query, classification prefix, and title filter
+- Shows results with the matched section, classification badge, and the passage that matched
+
+Run it:
+
+```bash
+python3 app.py
+# then open http://localhost:5001
+```
+
+The index build takes ~52s on startup. After that, searches run in the browser and the first query is a bit slower while the model warms up.
